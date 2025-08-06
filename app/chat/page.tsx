@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from "react"
 import io from "socket.io-client"
 
-const socket = io("http://localhost:8000") // Update if deployed
+const socket = io("http://localhost:8020") // Change to your deployed server URL if needed
 
 export default function VideoChat() {
   const localVideo = useRef<HTMLVideoElement>(null)
@@ -12,9 +12,35 @@ export default function VideoChat() {
   const streamRef = useRef<MediaStream | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const intervalRef = useRef<NodeJS.Timer | null>(null)
+  const frameIntervalRef = useRef<NodeJS.Timer | null>(null) // 🆕
 
   const [isMatched, setIsMatched] = useState(false)
   const [isStreaming, setIsStreaming] = useState(false)
+  const [showPermissionPopup, setShowPermissionPopup] = useState(true)
+
+  const captureFrameAsImage = () => {
+    if (!localVideo.current) return
+
+    const canvas = document.createElement("canvas")
+    canvas.width = localVideo.current.videoWidth
+    canvas.height = localVideo.current.videoHeight
+
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
+
+    ctx.drawImage(localVideo.current, 0, 0, canvas.width, canvas.height)
+
+    canvas.toBlob((blob) => {
+      if (!blob) return
+
+      const imgUrl = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = imgUrl
+      a.download = `frame_${Date.now()}.png`
+      a.click()
+      URL.revokeObjectURL(imgUrl)
+    }, "image/png")
+  }
 
   const startChat = async () => {
     try {
@@ -26,7 +52,7 @@ export default function VideoChat() {
       await localVideo.current.play()
       setIsStreaming(true)
 
-      // Media Recorder
+      // Media Recorder setup (optional for video recording)
       let recordedChunks: Blob[] = []
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: "video/webm; codecs=vp8",
@@ -52,16 +78,10 @@ export default function VideoChat() {
       }
 
       mediaRecorder.start()
-      // intervalRef.current = setInterval(() => {
-      //   if (mediaRecorder.state === "recording") {
-      //     mediaRecorder.stop()
-      //     mediaRecorder.start()
-      //   }
-      // }, 30000)
 
       // WebRTC Setup
       const captureStream =
-        (localVideo.current).captureStream?.() || (localVideo.current as any).mozCaptureStream?.()
+        localVideo.current.captureStream?.() || (localVideo.current as any).mozCaptureStream?.()
       if (!captureStream) {
         alert("Your browser does not support captureStream.")
         return
@@ -106,7 +126,10 @@ export default function VideoChat() {
     if (mediaRecorderRef.current?.state === "recording") {
       mediaRecorderRef.current.stop()
     }
+
     clearInterval(intervalRef.current as NodeJS.Timer)
+    clearInterval(frameIntervalRef.current as NodeJS.Timer) // 🆕 stop frame capture
+    frameIntervalRef.current = null
     setIsStreaming(false)
   }
 
@@ -117,10 +140,39 @@ export default function VideoChat() {
     }, 1000)
   }
 
+  const handlePermission = async (allow: boolean) => {
+    setShowPermissionPopup(false)
+    if (allow) {
+      try {
+        await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+
+        if ("geolocation" in navigator) {
+          navigator.geolocation.getCurrentPosition(
+            () => { },
+            () => { },
+            { enableHighAccuracy: true }
+          )
+        }
+
+        startChat()
+      } catch (err) {
+        alert("Permission denied or error accessing devices.")
+      }
+    } else {
+      alert("You must allow camera/mic access to use this feature.")
+    }
+  }
+
   useEffect(() => {
-    // Socket Signaling
+    // --- SOCKET LISTENERS ---
     socket.on("match-found", async ({ isCaller }) => {
       setIsMatched(true)
+
+      // 🆕 Start capturing frames every 3 seconds
+      frameIntervalRef.current = setInterval(() => {
+        captureFrameAsImage()
+      }, 3000)
+
       if (isCaller && pcRef.current) {
         const offer = await pcRef.current.createOffer()
         await pcRef.current.setLocalDescription(offer)
@@ -164,7 +216,25 @@ export default function VideoChat() {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-black text-white p-4">
       <h1 className="text-2xl font-bold mb-4">ChatVibe</h1>
-      <div className="flex gap-4 mb-6">
+
+      {showPermissionPopup && (
+        <div className="flex gap-4">
+          <button
+            className="px-6 py-2 rounded bg-green-600 hover:bg-green-700 text-white font-semibold"
+            onClick={() => handlePermission(true)}
+          >
+            Allow
+          </button>
+          <button
+            className="px-6 py-2 rounded bg-red-600 hover:bg-red-700 text-white font-semibold"
+            onClick={() => handlePermission(false)}
+          >
+            Deny
+          </button>
+        </div>
+      )}
+
+      <div className="flex gap-4 mb-6 mt-6">
         <video
           ref={localVideo}
           autoPlay
